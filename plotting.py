@@ -64,16 +64,16 @@ def plot_true_section(inv_data: dict) -> go.Figure:
 
     # Ekstrak data blok hasil inversi
     blocks = inv_data['blocks']
-    x_coords = np.array([b['x_pos'] for b in blocks])
-    z_coords = np.array([b['depth'] for b in blocks])
-    rho_values = np.array([b['resistivity'] for b in blocks])
+    x_coords = np.array([b['x_pos'] for b in blocks], dtype=float)
+    z_coords = np.array([b['depth'] for b in blocks], dtype=float)
+    rho_values = np.array([b['resistivity'] for b in blocks], dtype=float)
 
     # Menggunakan skala logaritmik untuk nilai resistivitas agar kontur lebih sensitif
     log_rho = np.log10(rho_values)
 
     # Buat grid halus (Fine Grid) untuk interpolasi kontur yang mulus
-    x_min, x_max = x_coords.min(), x_coords.max()
-    z_min, z_max = z_coords.min(), z_coords.max()
+    x_min, x_max = float(x_coords.min()), float(x_coords.max())
+    z_min, z_max = float(z_coords.min()), float(z_coords.max())
     
     grid_x, grid_z = np.mgrid[x_min:x_max:300j, z_min:z_max:150j]
 
@@ -101,8 +101,8 @@ def plot_true_section(inv_data: dict) -> go.Figure:
             if x_val < left_bound or x_val > right_bound:
                 grid_rho[i, j] = np.nan
 
-    c_min = np.nanmin(rho_values)
-    c_max = np.nanmax(rho_values)
+    c_min = float(np.nanmin(rho_values))
+    c_max = float(np.nanmax(rho_values))
 
     fig = go.Figure(data=go.Contour(
         x=grid_x[:, 0],
@@ -229,7 +229,7 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     return fig
 
 
-# ─── 3. Plot Konvergensi RMS Inversi (SUDAH DIPERBAIKI) ──────────────────────
+# ─── 3. Plot Konvergensi RMS Inversi ─────────────────────────────────────────
 
 def plot_rms_convergence(rms_history: list) -> go.Figure:
     """Memplot grafik kurva konvergensi RMS terhadap nomor iterasi."""
@@ -358,15 +358,16 @@ def plot_comparison_array(results_list: list) -> go.Figure:
     return fig
 
 
-# ─── 6. Bar Chart Rata-rata Lapisan ──────────────────────────────────────────
+# ─── 6. Bar Chart Rata-rata Lapisan (SUDAH DIPERBAIKI UNTUK PYTHON 3.14) ─────
 
 def plot_layer_bar(layer_avgs: list) -> go.Figure:
     """Bar chart horizontal rata-rata resistivitas per kedalaman lapisan."""
     if not layer_avgs:
         return go.Figure()
 
-    labels = [f"Lap. {d['layer']}\n(z={d['depth']:.1f}m)" for d in layer_avgs]
-    values = [d['avg_rho'] for d in layer_avgs]
+    # PERBAIKAN UTAMA: Menggunakan <br> menggantikan \n untuk kompabilitas Plotly/Python 3.14
+    labels = [f"Lap. {d['layer']}<br>(z={d['depth']:.1f}m)" for d in layer_avgs]
+    values = [float(d['avg_rho']) for d in layer_avgs]
     materials = [classify_material(v)[0] for v in values]
     bar_colors = [classify_material(v)[1] for v in values]
 
