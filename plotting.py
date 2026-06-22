@@ -229,7 +229,7 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     return fig
 
 
-# ─── 3. Plot Konvergensi RMS Inversi ─────────────────────────────────────────
+# ─── 3. Plot Konvergensi RMS Inversi (SUDAH DIPERBAIKI) ──────────────────────
 
 def plot_rms_convergence(rms_history: list) -> go.Figure:
     """Memplot grafik kurva konvergensi RMS terhadap nomor iterasi."""
@@ -249,7 +249,7 @@ def plot_rms_convergence(rms_history: list) -> go.Figure:
 
     fig.update_layout(
         title=dict(text='Kurva Konvergensi Inversi RES2DINV', font=dict(size=14)),
-        xaxis=dict(title='Iterasi Ke-', tickmode='linear', start=1),
+        xaxis=dict(title='Iterasi Ke-', tickmode='linear', tick0=1, dtick=1),
         yaxis=dict(title='RMS Error (%)', gridcolor='rgba(200,200,200,0.3)'),
         plot_bgcolor='white',
         height=320,
