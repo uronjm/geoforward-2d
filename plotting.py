@@ -104,9 +104,13 @@ def plot_true_section(inv_data: dict) -> go.Figure:
     c_min = float(np.nanmin(rho_values))
     c_max = float(np.nanmax(rho_values))
 
+    # Konversi koordinat grid ke list murni Python untuk kestabilan Plotly 3.14
+    x_axis_v = [float(val) for val in grid_x[:, 0]]
+    y_axis_v = [float(val) for val in grid_z[0, :]]
+
     fig = go.Figure(data=go.Contour(
-        x=grid_x[:, 0],
-        y=grid_z[0, :],
+        x=x_axis_v,
+        y=y_axis_v,
         z=grid_rho.T,
         colorscale=RES2DINV_COLORSCALE,
         contours=dict(
@@ -126,9 +130,12 @@ def plot_true_section(inv_data: dict) -> go.Figure:
         hovertemplate='X: %{x:.1f} m<br>Kedalaman: %{y:.1f} m<br>True ρ: %{z:.1f} Ω·m<extra></extra>'
     ))
 
+    # Mengambil nilai RMS secara aman
+    final_rms_val = float(inv_data.get('final_rms', 0) or 0)
+
     fig.update_layout(
         title=dict(
-            text=f"Penampang Inversi True Resistivity 2D (Model RMS: {inv_data.get('final_rms', 0):.2f}%)",
+            text=f"Penampang Inversi True Resistivity 2D (Model RMS: {final_rms_val:.2f}%)",
             font=dict(size=14, color='#1e293b'),
             x=0.01
         ),
@@ -166,9 +173,10 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     if pts.size == 0:
         return go.Figure()
 
-    x = pts[:, 0]
-    z = pts[:, 1]
-    rho_a = pts[:, 2]
+    # Konversi data titik datum ke tipe murni Python float list
+    x = [float(v) for v in pts[:, 0]]
+    z = [float(v) for v in pts[:, 1]]
+    rho_a = [float(v) for v in pts[:, 2]]
 
     fig = go.Figure()
 
@@ -193,15 +201,19 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
 
     # Tambahkan kontur halus di latar belakang jika data mencukupi
     if len(x) > 3:
-        xi = np.linspace(x.min(), x.max(), 200)
-        zi = np.linspace(z.min(), z.max(), 100)
+        xi = np.linspace(min(x), max(x), 200)
+        zi = np.linspace(min(z), max(z), 100)
         xi_m, zi_m = np.meshgrid(xi, zi)
         try:
-            rho_i = griddata((x, z), np.log10(rho_a), (xi_m, zi_m), method='linear')
+            rho_i = griddata((pts[:, 0], pts[:, 1]), np.log10(pts[:, 2]), (xi_m, zi_m), method='linear')
             rho_i = 10**rho_i
             
+            # Ubah kontur data ke list Python murni
+            xi_list = [float(v) for v in xi]
+            zi_list = [float(v) for v in zi]
+
             fig.add_trace(go.Contour(
-                x=xi, y=zi, z=rho_i,
+                x=xi_list, y=zi_list, z=rho_i,
                 colorscale=COLORSCALE_GEO,
                 showscale=False,
                 opacity=0.85,
@@ -214,9 +226,11 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     if len(fig.data) > 1:
         fig.data = (fig.data[1], fig.data[0])
 
+    elec_spacing_val = float(fwd_result.electrode_spacing)
+
     fig.update_layout(
         title=dict(
-            text=f"Pseudosection Semu — {fwd_result.array_name} (a={fwd_result.electrode_spacing}m)",
+            text=f"Pseudosection Semu — {fwd_result.array_name} (a={elec_spacing_val:.1f}m)",
             font=dict(size=14), x=0.02
         ),
         xaxis=dict(title='Jarak Lintasan (m)', mirror=True, showline=True, linecolor='#1e293b'),
@@ -238,9 +252,10 @@ def plot_rms_convergence(rms_history: list) -> go.Figure:
         return fig
 
     iters = list(range(1, len(rms_history) + 1))
+    rms_values = [float(v) for v in rms_history]
     
     fig.add_trace(go.Scatter(
-        x=iters, y=rms_history,
+        x=iters, y=rms_values,
         mode='lines+markers',
         line=dict(color='#185FA5', width=3),
         marker=dict(size=8, color='#0a2744'),
@@ -279,11 +294,14 @@ def plot_comparison_spasi(results_list: list) -> go.Figure:
         
         layer1 = layer1[layer1[:, 0].argsort()]
         color = SPASI_COLORS.get(int(res.electrode_spacing), '#666666')
+
+        x_vals = [float(v) for v in layer1[:, 0]]
+        y_vals = [float(v) for v in layer1[:, 2]]
         
         fig.add_trace(go.Scatter(
-            x=layer1[:, 0], y=layer1[:, 2],
+            x=x_vals, y=y_vals,
             mode='lines+markers',
-            name=f"Spasi {res.electrode_spacing} m",
+            name=f"Spasi {int(res.electrode_spacing)} m",
             line=dict(color=color, width=2),
             marker=dict(size=5)
         ))
@@ -331,8 +349,11 @@ def plot_comparison_array(results_list: list) -> go.Figure:
         layer1 = layer1[layer1[:, 0].argsort()]
         color = ARRAY_COLORS.get(res.array_name, '#666666')
 
+        x_vals = [float(v) for v in layer1[:, 0]]
+        y_vals = [float(v) for v in layer1[:, 2]]
+
         fig.add_trace(go.Scatter(
-            x=layer1[:, 0], y=layer1[:, 2],
+            x=x_vals, y=y_vals,
             mode='lines',
             name=res.array_name,
             line=dict(color=color, width=2.5)
@@ -358,17 +379,19 @@ def plot_comparison_array(results_list: list) -> go.Figure:
     return fig
 
 
-# ─── 6. Bar Chart Rata-rata Lapisan (PERBAIKAN WARNA LATAR PYTHON 3.14) ──────
+# ─── 6. Bar Chart Rata-rata Lapisan (PROTEKSI PENUH PYTHON 3.14) ─────────────
 
 def plot_layer_bar(layer_avgs: list) -> go.Figure:
     """Bar chart horizontal rata-rata resistivitas per kedalaman lapisan."""
     if not layer_avgs:
         return go.Figure()
 
-    labels = [f"Lap. {d['layer']}<br>(z={d['depth']:.1f}m)" for d in layer_avgs]
+    # Memastikan tidak ada karakter \n dan memaksa konversi ke tipe float/str primitif
+    labels = [str(f"Lap. {int(d['layer'])}<br>(z={float(d['depth']):.1f}m)") for d in layer_avgs]
     values = [float(d['avg_rho']) for d in layer_avgs]
-    materials = [classify_material(v)[0] for v in values]
-    bar_colors = [classify_material(v)[1] for v in values]
+    
+    materials = [str(classify_material(v)[0]) for v in values]
+    bar_colors = [str(classify_material(v)[1]) for v in values]
 
     fig = go.Figure(go.Bar(
         x=values,
@@ -385,8 +408,8 @@ def plot_layer_bar(layer_avgs: list) -> go.Figure:
         title=dict(text='Rata-rata Resistivitas dan Estimasi Litologi per Lapisan Model Inversi', font=dict(size=13)),
         xaxis=dict(title='True Resistivity (Ω·m)', side='bottom'),
         yaxis=dict(autorange='reverse'),
-        plot_bgcolor='transparent', # PERBAIKAN: Menggunakan nilai konstan transparan standar
-        paper_bgcolor='white',
+        plot_bgcolor='white',       # Nilai aman warna solid latar belakang grafis
+        paper_bgcolor='white',      # Nilai aman warna solid luar grafis
         height=380,
         margin=dict(l=100, r=50, t=50, b=40),
     )
