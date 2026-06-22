@@ -1,6 +1,7 @@
 """
 Modul visualisasi penampang geolistrik 2D menggunakan Plotly.
 Menyediakan visualisasi interaktif yang menyerupai output standar RES2DINV.
+Mendukung penuh penegakan tipe data ketat pada Python 3.14+.
 """
 
 import numpy as np
@@ -25,7 +26,6 @@ COLORSCALE_GEO = [
     [1.00, '#4A1B0C'],   # Merah tua
 ]
 
-# Skala warna khusus penampang Inversi (True Resistivity) mirip RES2DINV
 RES2DINV_COLORSCALE = [
     [0.00, '#1A237E'],   # Biru Sangat Tua
     [0.15, '#1976D2'],   # Biru
@@ -52,71 +52,61 @@ SPASI_COLORS = {
 }
 
 
-# ─── 1. Penampang True Resistivity (Optimasi Gaya RES2DINV) ──────────────────
+# ─── 1. Penampang True Resistivity (Gaya RES2DINV) ───────────────────────────
 
 def plot_true_section(inv_data: dict) -> go.Figure:
     """
-    Memplot penampang True Resistivity 2D yang menyerupai output standar RES2DINV
-    menggunakan kontur halus, grid interpolasi, dan pemotongan batas kontur (trapesium).
+    Memplot penampang True Resistivity 2D hasil inversi.
     """
     if inv_data.get('rho_matrix') is None or len(inv_data.get('blocks', [])) == 0:
         return go.Figure()
 
-    # Ekstrak data blok hasil inversi
     blocks = inv_data['blocks']
     x_coords = np.array([b['x_pos'] for b in blocks], dtype=float)
     z_coords = np.array([b['depth'] for b in blocks], dtype=float)
     rho_values = np.array([b['resistivity'] for b in blocks], dtype=float)
 
-    # Menggunakan skala logaritmik untuk nilai resistivitas agar kontur lebih sensitif
     log_rho = np.log10(rho_values)
-
-    # Buat grid halus (Fine Grid) untuk interpolasi kontur yang mulus
     x_min, x_max = float(x_coords.min()), float(x_coords.max())
     z_min, z_max = float(z_coords.min()), float(z_coords.max())
     
     grid_x, grid_z = np.mgrid[x_min:x_max:300j, z_min:z_max:150j]
 
-    # Interpolasi data titik blok ke grid halus menggunakan Cubic Spline
     grid_rho_log = griddata(
         (x_coords, z_coords), 
         log_rho, 
         (grid_x, grid_z), 
         method='cubic'
     )
-    
-    # Kembalikan nilai ke skala resistivitas asli setelah interpolasi
     grid_rho = 10**grid_rho_log
 
-    # Masking / Pemotongan Trapesium (Khas RES2DINV)
+    # Masking Trapesium
     for i in range(grid_x.shape[0]):
         for j in range(grid_x.shape[1]):
             x_val = grid_x[i, j]
             z_val = grid_z[i, j]
-            
-            # Batas toleransi pemotongan kiri dan kanan berdasarkan kedalaman
             left_bound = x_min + (z_val - z_min) * 0.8
             right_bound = x_max - (z_val - z_min) * 0.8
-            
             if x_val < left_bound or x_val > right_bound:
                 grid_rho[i, j] = np.nan
 
     c_min = float(np.nanmin(rho_values))
     c_max = float(np.nanmax(rho_values))
 
-    # Konversi koordinat grid ke list murni Python untuk kestabilan Plotly 3.14
+    # Konversi koordinat grid ke list murni Python
     x_axis_v = [float(val) for val in grid_x[:, 0]]
     y_axis_v = [float(val) for val in grid_z[0, :]]
+    z_data_v = [[float(val) if not np.isnan(val) else None for val in row] for row in grid_rho.T]
 
     fig = go.Figure(data=go.Contour(
         x=x_axis_v,
         y=y_axis_v,
-        z=grid_rho.T,
+        z=z_data_v,
         colorscale=RES2DINV_COLORSCALE,
         contours=dict(
             start=c_min,
             end=c_max,
-            showlines=True,       # Memunculkan garis kontur hitam tipis khas RES2DINV
+            showlines=True,
             coloring='heatmap'
         ),
         line=dict(width=0.5, color='rgba(40,40,40,0.5)'),
@@ -130,7 +120,6 @@ def plot_true_section(inv_data: dict) -> go.Figure:
         hovertemplate='X: %{x:.1f} m<br>Kedalaman: %{y:.1f} m<br>True ρ: %{z:.1f} Ω·m<extra></extra>'
     ))
 
-    # Mengambil nilai RMS secara aman
     final_rms_val = float(inv_data.get('final_rms', 0) or 0)
 
     fig.update_layout(
@@ -139,33 +128,17 @@ def plot_true_section(inv_data: dict) -> go.Figure:
             font=dict(size=14, color='#1e293b'),
             x=0.01
         ),
-        xaxis=dict(
-            title='Jarak Lintasan (m)',
-            gridcolor='rgba(200,200,200,0.2)',
-            zeroline=False,
-            mirror=True,
-            showline=True,
-            linecolor='#1e293b'
-        ),
-        yaxis=dict(
-            title='Kedalaman (m)',
-            autorange='reverse', # Membalik sumbu Y (0 di atas)
-            gridcolor='rgba(200,200,200,0.2)',
-            zeroline=False,
-            mirror=True,
-            showline=True,
-            linecolor='#1e293b'
-        ),
+        xaxis=dict(title='Jarak Lintasan (m)', gridcolor='rgba(200,200,200,0.2)', zeroline=False, mirror=True, showline=True, linecolor='#1e293b'),
+        yaxis=dict(title='Kedalaman (m)', autorange='reverse', gridcolor='rgba(200,200,200,0.2)', zeroline=False, mirror=True, showline=True, linecolor='#1e293b'),
         plot_bgcolor='white',
         paper_bgcolor='white',
         margin=dict(l=60, r=40, t=50, b=50),
         height=450
     )
-
     return fig
 
 
-# ─── 2. Penampang Semu (Pseudosection Forward Modelling) ───────────────────
+# ─── 2. Penampang Semu (Pseudosection) ───────────────────────────────────────
 
 def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     """Memplot pseudosection hasil dari forward modelling."""
@@ -173,14 +146,12 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     if pts.size == 0:
         return go.Figure()
 
-    # Konversi data titik datum ke tipe murni Python float list
     x = [float(v) for v in pts[:, 0]]
     z = [float(v) for v in pts[:, 1]]
     rho_a = [float(v) for v in pts[:, 2]]
 
     fig = go.Figure()
 
-    # Plot titik datum individu
     fig.add_trace(go.Scatter(
         x=x, y=z,
         mode='markers',
@@ -189,17 +160,12 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
             color=rho_a,
             colorscale=COLORSCALE_GEO,
             showscale=True,
-            colorbar=dict(
-                title='ρa (Ω·m)',
-                titleside='right',
-                tickformat='.1f'
-            ),
+            colorbar=dict(title='ρa (Ω·m)', titleside='right', tickformat='.1f'),
             line=dict(width=0.5, color='black')
         ),
         hovertemplate='X (Tengah): %{x:.1f} m<br>Pseudo-Depth: %{y:.2f} m<br>ρa: %{marker.color:.1f} Ω·m<extra></extra>'
     ))
 
-    # Tambahkan kontur halus di latar belakang jika data mencukupi
     if len(x) > 3:
         xi = np.linspace(min(x), max(x), 200)
         zi = np.linspace(min(z), max(z), 100)
@@ -208,12 +174,12 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
             rho_i = griddata((pts[:, 0], pts[:, 1]), np.log10(pts[:, 2]), (xi_m, zi_m), method='linear')
             rho_i = 10**rho_i
             
-            # Ubah kontur data ke list Python murni
             xi_list = [float(v) for v in xi]
             zi_list = [float(v) for v in zi]
+            z_grid_v = [[float(val) if not np.isnan(val) else None for val in row] for row in rho_i]
 
             fig.add_trace(go.Contour(
-                x=xi_list, y=zi_list, z=rho_i,
+                x=xi_list, y=zi_list, z=z_grid_v,
                 colorscale=COLORSCALE_GEO,
                 showscale=False,
                 opacity=0.85,
@@ -229,10 +195,7 @@ def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
     elec_spacing_val = float(fwd_result.electrode_spacing)
 
     fig.update_layout(
-        title=dict(
-            text=f"Pseudosection Semu — {fwd_result.array_name} (a={elec_spacing_val:.1f}m)",
-            font=dict(size=14), x=0.02
-        ),
+        title=dict(text=f"Pseudosection Semu — {fwd_result.array_name} (a={elec_spacing_val:.1f}m)", font=dict(size=14), x=0.02),
         xaxis=dict(title='Jarak Lintasan (m)', mirror=True, showline=True, linecolor='#1e293b'),
         yaxis=dict(title='Pseudo Kedalaman (m)', autorange='reverse', mirror=True, showline=True, linecolor='#1e293b'),
         plot_bgcolor='white',
@@ -316,10 +279,7 @@ def plot_comparison_spasi(results_list: list) -> go.Figure:
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family='Inter, sans-serif', size=11),
-        title=dict(
-            text='Komparasi Sinyal ρa Terhadap Jarak Lintasan — Variasi Spasi Elektroda',
-            font=dict(size=14), x=0.02
-        ),
+        title=dict(text='Komparasi Sinyal ρa Terhadap Jarak Lintasan — Variasi Spasi Elektroda', font=dict(size=14), x=0.02),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         margin=dict(l=60, r=40, t=50, b=50),
         height=400
@@ -371,25 +331,23 @@ def plot_comparison_array(results_list: list) -> go.Figure:
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family='Inter, sans-serif', size=11),
-        title=dict(
-            text='Komparasi Pseudosection — Variasi Konfigurasi Elektroda',
-            font=dict(size=14), x=0.02
-        ),
+        title=dict(text='Komparasi Pseudosection — Variasi Konfigurasi Elektroda', font=dict(size=14), x=0.02),
     )
     return fig
 
 
-# ─── 6. Bar Chart Rata-rata Lapisan (PROTEKSI PENUH PYTHON 3.14) ─────────────
+# ─── 6. Bar Chart Rata-rata Lapisan ──────────────────────────────────────────
 
 def plot_layer_bar(layer_avgs: list) -> go.Figure:
     """Bar chart horizontal rata-rata resistivitas per kedalaman lapisan."""
     if not layer_avgs:
         return go.Figure()
 
-    # Memastikan tidak ada karakter \n dan memaksa konversi ke tipe float/str primitif
+    # Sanitasi total tipe data elemen array: konversi eksplisit ke str dan float murni Python
     labels = [str(f"Lap. {int(d['layer'])}<br>(z={float(d['depth']):.1f}m)") for d in layer_avgs]
     values = [float(d['avg_rho']) for d in layer_avgs]
     
+    # Bersihkan metadata kustom agar tidak membawa structural object NumPy
     materials = [str(classify_material(v)[0]) for v in values]
     bar_colors = [str(classify_material(v)[1]) for v in values]
 
@@ -401,15 +359,15 @@ def plot_layer_bar(layer_avgs: list) -> go.Figure:
         text=[f"{v:.0f} Ω·m" for v in values],
         textposition='outside',
         hovertemplate='<b>%{y}</b><br>ρ rata-rata = %{x:.1f} Ω·m<extra></extra>',
-        customdata=materials,
+        customdata=materials,  # Menggunakan list string murni, aman untuk validasi Plotly
     ))
 
     fig.update_layout(
         title=dict(text='Rata-rata Resistivitas dan Estimasi Litologi per Lapisan Model Inversi', font=dict(size=13)),
         xaxis=dict(title='True Resistivity (Ω·m)', side='bottom'),
         yaxis=dict(autorange='reverse'),
-        plot_bgcolor='white',       # Nilai aman warna solid latar belakang grafis
-        paper_bgcolor='white',      # Nilai aman warna solid luar grafis
+        plot_bgcolor='white',
+        paper_bgcolor='white',
         height=380,
         margin=dict(l=100, r=50, t=50, b=40),
     )
