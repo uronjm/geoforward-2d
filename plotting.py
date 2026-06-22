@@ -1,27 +1,40 @@
 """
 Modul visualisasi penampang geolistrik 2D menggunakan Plotly.
+Menyediakan visualisasi interaktif yang menyerupai output standar RES2DINV.
 """
 
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from scipy.interpolate import griddata
 from forward_model import ForwardResult, classify_material
 
-
-# ─── Skala warna geolistrik ──────────────────────────────────────────────────
+# ─── Skala Warna Geolistrik Standar & RES2DINV ───────────────────────────────
 
 COLORSCALE_GEO = [
     [0.00, "#185FA5"],   # Biru tua — sangat rendah
-    [0.10, "#1976D2"],   # Biru
-    [0.25, "#29B6F6"],   # Biru muda
-    [0.40, "#1D9E75"],   # Hijau toska
-    [0.55, "#66BB6A"],   # Hijau
-    [0.65, "#FDD835"],   # Kuning
-    [0.75, "#EF9F27"],   # Oranye
-    [0.85, "#D85A30"],   # Oranye merah
-    [0.92, "#C62828"],   # Merah
-    [1.00, "#4A1B0C"],   # Merah tua
+    [0.10, \"#1976D2\"],   # Biru
+    [0.25, \"#29B6F6\"],   # Biru muda
+    [0.40, \"#1D9E75\"],   # Hijau toska
+    [0.55, \"#66BB6A\"],   # Hijau
+    [0.65, \"#FDD835\"],   # Kuning
+    [0.75, \"#EF9F27\"],   # Oranye
+    [0.85, \"#D85A30\"],   # Oranye merah
+    [0.92, \"#C62828\"],   # Merah
+    [1.00, \"#4A1B0C\"],   # Merah tua
+]
+
+# Skala warna khusus penampang Inversi (True Resistivity) mirip RES2DINV
+RES2DINV_COLORSCALE = [
+    [0.00, "#1A237E"],   # Biru Sangat Tua (Low Resistivity / Lempung / Air)
+    [0.15, "#1976D2"],   # Biru
+    [0.30, "#4FC3F7"],   # Biru Muda
+    [0.45, "#4CAF50"],   # Hijau (Silt / Pasir Pasiran)
+    [0.60, "#FFEB3B"],   # Kuning
+    [0.75, "#FB8C00"],   # Oranye
+    [0.90, "#D32F2F"],   # Merah (Batuan Keras / Sandstone Kering)
+    [1.00, "#4A148C"]    # Ungu Tua / Cokelat (Massive Bedrock)
 ]
 
 ARRAY_COLORS = {
@@ -30,368 +43,316 @@ ARRAY_COLORS = {
     "Dipole-Dipole": "#993C1D",
 }
 
-SPASI_COLORS = {1: "#7F77DD", 2: "#185FA5", 3: "#0F6E56"}
+SPASI_COLORS = {
+    1: "#7F77DD", 
+    2: "#185FA5", 
+    3: "#0F6E56", 
+    4: "#EF9F27", 
+    5: "#D85A30"
+}
 
 
-def _log_scale(values: np.ndarray):
-    """Konversi ke log10 untuk colorscale."""
-    v = np.array(values, dtype=float)
-    v = np.where(v <= 0, 0.1, v)
-    return np.log10(v)
+# ─── 1. Penampang True Resistivity (Optimasi Gaya RES2DINV) ──────────────────
 
-
-# ─── Pseudosection plot ───────────────────────────────────────────────────────
-
-def plot_pseudosection(
-    datum_points: np.ndarray,
-    title: str = "Pseudosection Apparent Resistivity",
-    colorbar_title: str = "ρa (Ω·m)",
-    height: int = 350,
-    rho_min: float = None,
-    rho_max: float = None,
-    show_values: bool = False,
-) -> go.Figure:
+def plot_true_section(inv_data: dict) -> go.Figure:
     """
-    Plot pseudosection sebagai scatter plot bubble.
-
-    datum_points: array (N, 3) → [x_mid, pseudo_depth, rho_a]
+    Memplot penampang True Resistivity 2D yang menyerupai output standar RES2DINV
+    menggunakan kontur halus, grid interpolasi, dan pemotongan batas kontur (trapesium).
     """
-    if datum_points is None or len(datum_points) == 0:
-        fig = go.Figure()
-        fig.add_annotation(text="Tidak ada data", xref="paper", yref="paper",
-                           x=0.5, y=0.5, showarrow=False)
-        return fig
+    if inv_data.get("rho_matrix") is None or len(inv_data.get("blocks", [])) == 0:
+        return go.Figure()
 
-    x = datum_points[:, 0]
-    z = datum_points[:, 1]
-    rho = datum_points[:, 2]
+    # Ekstrak data blok hasil inversi
+    blocks = inv_data["blocks"]
+    x_coords = np.array([b["x_pos"] for b in blocks])
+    z_coords = np.array([b["depth"] for b in blocks])
+    rho_values = np.array([b["resistivity"] for b in blocks])
 
-    log_rho = _log_scale(rho)
-    vmin = _log_scale(np.array([rho_min]))[0] if rho_min else log_rho.min()
-    vmax = _log_scale(np.array([rho_max]))[0] if rho_max else log_rho.max()
+    # Menggunakan skala logaritmik untuk nilai resistivitas agar kontur lebih sensitif
+    log_rho = np.log10(rho_values)
 
-    hover_text = [
-        f"<b>x</b> = {xi:.1f} m<br>"
-        f"<b>Pseudo-depth</b> = {zi:.2f} m<br>"
-        f"<b>ρa</b> = {r:.1f} Ω·m<br>"
-        f"<b>Litologi</b>: {classify_material(r)[0]}"
-        for xi, zi, r in zip(x, z, rho)
-    ]
+    # Buat grid halus (Fine Grid) untuk interpolasi kontur yang mulus
+    x_min, x_max = x_coords.min(), x_coords.max()
+    z_min, z_max = z_coords.min(), z_coords.max()
+    
+    grid_x, grid_z = np.mgrid[x_min:x_max:300j, z_min:z_max:150j]
+
+    # Interpolasi data titik blok ke grid halus menggunakan Cubic Spline
+    grid_rho_log = griddata(
+        (x_coords, z_coords), 
+        log_rho, 
+        (grid_x, grid_z), 
+        method='cubic'
+    )
+    
+    # Kembalikan nilai ke skala resistivitas asli setelah interpolasi
+    grid_rho = 10**grid_rho_log
+
+    # Masking / Pemotongan Trapesium (Khas RES2DINV)
+    # Seiring bertambahnya kedalaman (z), jangkauan horizontal akan menyempit
+    for i in range(grid_x.shape[0]):
+        for j in range(grid_x.shape[1]):
+            x_val = grid_x[i, j]
+            z_val = grid_z[i, j]
+            
+            # Batas toleransi pemotongan kiri dan kanan berdasarkan kedalaman
+            left_bound = x_min + (z_val - z_min) * 0.8
+            right_bound = x_max - (z_val - z_min) * 0.8
+            
+            if x_val < left_bound or x_val > right_bound:
+                grid_rho[i, j] = np.nan
+
+    # Tentukan level kontur secara logaritmik agar pembagian kelas warna seimbang
+    c_min = np.nanmin(rho_values)
+    c_max = np.nanmax(rho_values)
+
+    fig = go.Figure(data=go.Contour(
+        x=grid_x[:, 0],
+        y=grid_z[0, :],
+        z=grid_rho.T,
+        colorscale=RES2DINV_COLORSCALE,
+        contours=dict(
+            start=c_min,
+            end=c_max,
+            showlines=True,       # Memunculkan garis kontur hitam tipis khas RES2DINV
+            coloring='heatmap'
+        ),
+        line=dict(width=0.5, color="rgba(40,40,40,0.5)"),
+        colorbar=dict(
+            title="Resistivitas (Ω·m)",
+            titleside="right",
+            ticks="outside",
+            tickformat=".1f",
+            exponentformat="none"
+        ),
+        hovertemplate="X: %{x:.1f} m<br>Kedalaman: %{y:.1f} m<br>True ρ: %{z:.1f} Ω·m<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=f"Penampang Inversi True Resistivity 2D (Model RMS: {inv_data.get('final_rms', 0):.2f}%)",
+            font=dict(size=14, color="#1e293b"),
+            x=0.01
+        ),
+        xaxis=dict(
+            title="Jarak Lintasan (m)",
+            gridcolor="rgba(200,200,200,0.2)",
+            zeroline=False,
+            mirror=True,
+            showline=True,
+            linecolor="#1e293b"
+        ),
+        yaxis=dict(
+            title="Kedalaman (m)",
+            autorange="reverse", # Membalik sumbu Y (0 di atas, kedalaman makin ke bawah)
+            gridcolor="rgba(200,200,200,0.2)",
+            zeroline=False,
+            mirror=True,
+            showline=True,
+            linecolor="#1e293b"
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=60, r=40, t=50, b=50),
+        height=450
+    )
+
+    return fig
+
+
+# ─── 2. Penampang Semu (Pseudosection Forward Modelling) ───────────────────
+
+def plot_pseudosection(fwd_result: ForwardResult) -> go.Figure:
+    """Memplot pseudosection hasil dari forward modelling."""
+    pts = fwd_result.datum_points
+    if pts.size == 0:
+        return go.Figure()
+
+    x = pts[:, 0]
+    z = pts[:, 1]
+    rho_a = pts[:, 2]
 
     fig = go.Figure()
+
+    # Plot titik datum individu
     fig.add_trace(go.Scatter(
         x=x, y=z,
         mode="markers",
         marker=dict(
-            size=14,
-            color=log_rho,
+            size=10,
+            color=rho_a,
             colorscale=COLORSCALE_GEO,
-            cmin=vmin, cmax=vmax,
+            showscale=True,
             colorbar=dict(
-                title=dict(text=colorbar_title, side="right"),
-                tickvals=[vmin, (vmin + vmax) / 2, vmax],
-                ticktext=[
-                    f"{10**vmin:.0f}",
-                    f"{10**((vmin+vmax)/2):.0f}",
-                    f"{10**vmax:.0f}"
-                ],
-                len=0.9,
-                thickness=14,
+                title="ρa (Ω·m)",
+                titleside="right",
+                tickformat=".1f"
             ),
-            symbol="square",
-            line=dict(width=0.3, color="rgba(0,0,0,0.2)"),
+            line=dict(width=0.5, color="black")
         ),
-        text=hover_text,
-        hovertemplate="%{text}<extra></extra>",
+        hovertemplate="X (Tengah): %{x:.1f} m<br>Pseudo-Depth: %{y:.2f} m<br>ρa: %{marker.color:.1f} Ω·m<extra></extra>"
     ))
 
-    if show_values:
-        fig.add_trace(go.Scatter(
-            x=x, y=z,
-            mode="text",
-            text=[f"{r:.0f}" for r in rho],
-            textfont=dict(size=8, color="white"),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
+    # Tambahkan kontur halus di latar belakang jika data mencukupi
+    if len(x) > 3:
+        xi = np.linspace(x.min(), x.max(), 200)
+        zi = np.linspace(z.min(), z.max(), 100)
+        xi_m, zi_m = np.meshgrid(xi, zi)
+        try:
+            rho_i = griddata((x, z), np.log10(rho_a), (xi_m, zi_m), method='linear')
+            rho_i = 10**rho_i
+            
+            fig.add_trace(go.Contour(
+                x=xi, y=zi, z=rho_i,
+                colorscale=COLORSCALE_GEO,
+                showscale=False,
+                opacity=0.85,
+                contours=dict(coloring='heatmap', showlines=False),
+                hoverinfo='skip'
+            ))
+        except:
+            pass # Lewati jika kegagalan interpolasi akibat keterbatasan geometri data
+
+    # Urutan trace: Kontur di bawah, titik marker di atas
+    if len(fig.data) > 1:
+        fig.data = (fig.data[1], fig.data[0])
 
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color="#1a1a1a"), x=0.02),
-        xaxis=dict(title="Jarak (m)", gridcolor="#f0f0f0", zeroline=False),
-        yaxis=dict(
-            title="Pseudo-depth (m)",
-            autorange="reversed",
-            gridcolor="#f0f0f0",
-            zeroline=False,
+        title=dict(
+            text=f"Pseudosection Semu — {fwd_result.array_name} (a={fwd_result.electrode_spacing}m)",
+            font=dict(size=14), x=0.02
         ),
-        height=height,
-        margin=dict(l=60, r=80, t=45, b=50),
+        xaxis=dict(title="Jarak Lintasan (m)", mirror=True, showline=True, linecolor="#1e293b"),
+        yaxis=dict(title="Pseudo Kedalaman (m)", autorange="reverse", mirror=True, showline=True, linecolor="#1e293b"),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        font=dict(family="Inter, sans-serif", size=12),
-        hovermode="closest",
+        height=400,
+        margin=dict(l=60, r=40, t=50, b=50),
     )
     return fig
 
 
-# ─── True resistivity section ────────────────────────────────────────────────
-
-def plot_true_section(
-    rho_matrix: np.ndarray,
-    x_positions: list,
-    depths: list,
-    title: str = "Penampang True Resistivity 2D",
-    height: int = 380,
-    rho_min: float = None,
-    rho_max: float = None,
-) -> go.Figure:
-    """Plot penampang true resistivity sebagai heatmap."""
-    if rho_matrix is None or rho_matrix.size == 0:
-        fig = go.Figure()
-        fig.add_annotation(text="Tidak ada data model", xref="paper",
-                           yref="paper", x=0.5, y=0.5, showarrow=False)
-        return fig
-
-    mat = rho_matrix.copy().astype(float)
-    mat = np.where(mat <= 0, np.nan, mat)
-    log_mat = np.where(np.isnan(mat), np.nan, np.log10(mat))
-
-    vmin = np.log10(rho_min) if rho_min else np.nanmin(log_mat)
-    vmax = np.log10(rho_max) if rho_max else np.nanmax(log_mat)
-
-    n_ticks = 6
-    tick_vals = np.linspace(vmin, vmax, n_ticks)
-    tick_text = [f"{10**v:.0f}" for v in tick_vals]
-
-    hover = [[
-        f"x={x_positions[ci] if ci < len(x_positions) else ci:.1f} m, "
-        f"z={depths[ri] if ri < len(depths) else ri:.1f} m, "
-        f"ρ={mat[ri,ci]:.1f} Ω·m"
-        for ci in range(mat.shape[1])
-    ] for ri in range(mat.shape[0])]
-
-    fig = go.Figure(go.Heatmap(
-        z=log_mat,
-        x=x_positions if len(x_positions) == log_mat.shape[1] else list(range(log_mat.shape[1])),
-        y=depths if len(depths) == log_mat.shape[0] else list(range(log_mat.shape[0])),
-        colorscale=COLORSCALE_GEO,
-        zmin=vmin, zmax=vmax,
-        colorbar=dict(
-            title=dict(text="ρ (Ω·m)", side="right"),
-            tickvals=tick_vals.tolist(),
-            ticktext=tick_text,
-            len=0.9,
-            thickness=14,
-        ),
-        hovertext=hover,
-        hovertemplate="%{hovertext}<extra></extra>",
-        xgap=1, ygap=1,
-    ))
-
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color="#1a1a1a"), x=0.02),
-        xaxis=dict(title="Jarak (m)", gridcolor="#f0f0f0"),
-        yaxis=dict(
-            title="Kedalaman (m)",
-            autorange="reversed",
-            gridcolor="#f0f0f0",
-        ),
-        height=height,
-        margin=dict(l=60, r=90, t=45, b=50),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        font=dict(family="Inter, sans-serif", size=12),
-    )
-    return fig
-
-
-# ─── RMS convergence plot ─────────────────────────────────────────────────────
+# ─── 3. Plot Konvergensi RMS Inversi ─────────────────────────────────────────
 
 def plot_rms_convergence(rms_history: list) -> go.Figure:
-    """Plot grafik konvergensi RMS error."""
+    """Memplot grafik kurva konvergensi RMS terhadap nomor iterasi."""
+    fig = go.Figure()
     if not rms_history:
-        return go.Figure()
+        return fig
 
     iters = list(range(1, len(rms_history) + 1))
-    colors = ["#D85A30" if v > 5 else "#0F6E56" for v in rms_history]
-
-    fig = go.Figure()
-
-    # Area fill
+    
     fig.add_trace(go.Scatter(
         x=iters, y=rms_history,
-        fill="tozeroy",
-        fillcolor="rgba(24, 95, 165, 0.08)",
-        line=dict(color="#185FA5", width=2.5),
         mode="lines+markers",
-        marker=dict(size=10, color=colors, line=dict(width=1.5, color="white")),
-        name="RMS Error",
-        hovertemplate="Iterasi %{x}: RMS = %{y:.2f}%<extra></extra>",
+        line=dict(color="#185FA5", width=3),
+        marker=dict(size=8, color="#0a2744"),
+        name="RMS Error"
     ))
 
-    # Garis batas 5%
-    fig.add_hline(
-        y=5.0,
-        line=dict(color="#D85A30", dash="dash", width=1.5),
-        annotation_text="Batas 5%",
-        annotation_position="right",
-        annotation_font=dict(color="#D85A30", size=11),
-    )
-
-    # Annotasi nilai akhir
-    if rms_history:
-        fig.add_annotation(
-            x=iters[-1], y=rms_history[-1],
-            text=f"  RMS akhir: {rms_history[-1]:.1f}%",
-            showarrow=False,
-            font=dict(size=11, color="#0F6E56" if rms_history[-1] <= 5 else "#D85A30"),
-            xanchor="left",
-        )
-
     fig.update_layout(
-        title=dict(text="Konvergensi Iterasi Inversi", font=dict(size=13), x=0.02),
-        xaxis=dict(title="Iterasi ke-", tickmode="linear", dtick=1,
-                   gridcolor="#f5f5f5"),
-        yaxis=dict(title="RMS Error (%)", gridcolor="#f5f5f5", rangemode="tozero"),
-        height=260,
-        margin=dict(l=55, r=60, t=40, b=45),
+        title=dict(text="Kurva Konvergensi Inversi RES2DINV", font=dict(size=14)),
+        xaxis=dict(title="Iterasi Ke-", tickmode="linear", start=1),
+        yaxis=dict(title="RMS Error (%)", gridcolor="rgba(200,200,200,0.3)"),
         plot_bgcolor="white",
-        paper_bgcolor="white",
-        font=dict(family="Inter, sans-serif", size=12),
-        showlegend=False,
+        height=320,
+        margin=dict(l=50, r=30, t=40, b=40),
     )
     return fig
 
 
-# ─── Komparasi multi-panel ────────────────────────────────────────────────────
+# ─── 4. Komparasi Variasi Spasi Elektroda ───────────────────────────────────
 
-def plot_comparison_spasi(results: dict, rho_min=None, rho_max=None) -> go.Figure:
-    """
-    Plot komparasi pseudosection untuk variasi spasi elektroda.
-    results: dict {spasi_value: ForwardResult}
-    """
-    spasi_vals = sorted(results.keys())
-    n = len(spasi_vals)
-    if n == 0:
+def plot_comparison_spasi(results_list: list) -> go.Figure:
+    """Membandingkan kurva nilai ρa profil lateral pada kedalaman pseudo level-1 dari berbagai spasi."""
+    fig = go.Figure()
+    valid = False
+
+    for res in results_list:
+        pts = res.datum_points
+        if pts.size == 0:
+            continue
+        
+        # Ambil level pseudo kedalaman teratas (terdangkal)
+        z_min = pts[:, 1].min()
+        mask = np.abs(pts[:, 1] - z_min) < 1e-3
+        layer1 = pts[mask]
+        
+        if layer1.size == 0:
+            continue
+        
+        # Urutkan berdasarkan posisi X horizontal
+        layer1 = layer1[layer1[:, 0].argsort()]
+        color = SPASI_COLORS.get(int(res.electrode_spacing), "#666666")
+        
+        fig.add_trace(go.Scatter(
+            x=layer1[:, 0], y=layer1[:, 2],
+            mode="lines+markers",
+            name=f"Spasi {res.electrode_spacing} m",
+            line=dict(color=color, width=2),
+            marker=dict(size=5)
+        ))
+        valid = True
+
+    if not valid:
         return go.Figure()
 
-    fig = make_subplots(
-        rows=n, cols=1,
-        subplot_titles=[f"Spasi a = {s} m — {results[s].array_name}" for s in spasi_vals],
-        vertical_spacing=0.08,
-    )
-
-    for idx, s in enumerate(spasi_vals):
-        res = results[s]
-        dp = res.datum_points
-        if dp is None or len(dp) == 0:
-            continue
-
-        x, z, rho = dp[:, 0], dp[:, 1], dp[:, 2]
-        log_rho = _log_scale(rho)
-        vmin = np.log10(rho_min) if rho_min else log_rho.min()
-        vmax = np.log10(rho_max) if rho_max else log_rho.max()
-
-        fig.add_trace(go.Scatter(
-            x=x, y=z,
-            mode="markers",
-            marker=dict(
-                size=12, symbol="square",
-                color=log_rho,
-                colorscale=COLORSCALE_GEO,
-                cmin=vmin, cmax=vmax,
-                showscale=(idx == n - 1),
-                colorbar=dict(
-                    title="ρa (Ω·m)",
-                    tickvals=[vmin, (vmin + vmax) / 2, vmax],
-                    ticktext=[f"{10**vmin:.0f}", f"{10**((vmin+vmax)/2):.0f}", f"{10**vmax:.0f}"],
-                    len=0.9 / n,
-                    y=1 - (idx + 0.5) / n,
-                    thickness=12,
-                ),
-            ),
-            hovertemplate=f"a={s}m | x=%{{x:.1f}}m | z=%{{y:.2f}}m | ρa=%{{customdata:.1f}} Ω·m<extra></extra>",
-            customdata=rho,
-            showlegend=False,
-        ), row=idx + 1, col=1)
-
-        fig.update_yaxes(autorange="reversed", title_text="Depth (m)",
-                         row=idx + 1, col=1)
-        fig.update_xaxes(title_text="Jarak (m)" if idx == n - 1 else "",
-                         row=idx + 1, col=1)
-
     fig.update_layout(
-        height=280 * n,
-        margin=dict(l=60, r=90, t=50, b=50),
+        xaxis=dict(title="Jarak Lintasan (m)", mirror=True, showline=True, linecolor="#1e293b"),
+        yaxis=dict(title="Apparent Resistivity ρa (Ω·m)", gridcolor="rgba(200,200,200,0.3)"),
         plot_bgcolor="white",
         paper_bgcolor="white",
         font=dict(family="Inter, sans-serif", size=11),
         title=dict(
-            text="Komparasi Pseudosection — Variasi Spasi Elektroda",
+            text="Komparasi Sinyal ρa Terhadap Jarak Lintasan — Variasi Spasi Elektroda",
             font=dict(size=14), x=0.02
         ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=40, t=50, b=50),
+        height=400
     )
     return fig
 
 
-def plot_comparison_array(results: dict, rho_min=None, rho_max=None) -> go.Figure:
-    """
-    Plot komparasi pseudosection untuk variasi konfigurasi.
-    results: dict {array_name: ForwardResult}
-    """
-    array_names = list(results.keys())
-    n = len(array_names)
-    if n == 0:
-        return go.Figure()
+# ─── 5. Komparasi Variasi Konfigurasi Elektroda ──────────────────────────────
 
-    fig = make_subplots(
-        rows=n, cols=1,
-        subplot_titles=[f"{name} — a = {results[name].electrode_spacing} m" for name in array_names],
-        vertical_spacing=0.08,
-    )
+def plot_comparison_array(results_list: list) -> go.Figure:
+    """Membandingkan respons sensitivitas lateral ρa antar konfigurasi (Wenner, WS, DD)."""
+    fig = go.Figure()
+    valid = False
 
-    for idx, name in enumerate(array_names):
-        res = results[name]
-        dp = res.datum_points
-        if dp is None or len(dp) == 0:
+    for res in results_list:
+        pts = res.datum_points
+        if pts.size == 0:
             continue
-
-        x, z, rho = dp[:, 0], dp[:, 1], dp[:, 2]
-        log_rho = _log_scale(rho)
-        vmin = np.log10(rho_min) if rho_min else log_rho.min()
-        vmax = np.log10(rho_max) if rho_max else log_rho.max()
+        
+        # Ambil level kedalaman teratas
+        z_min = pts[:, 1].min()
+        mask = np.abs(pts[:, 1] - z_min) < 1e-3
+        layer1 = pts[mask]
+        
+        if layer1.size == 0:
+            continue
+            
+        layer1 = layer1[layer1[:, 0].argsort()]
+        color = ARRAY_COLORS.get(res.array_name, "#666666")
 
         fig.add_trace(go.Scatter(
-            x=x, y=z,
-            mode="markers",
-            marker=dict(
-                size=12, symbol="square",
-                color=log_rho,
-                colorscale=COLORSCALE_GEO,
-                cmin=vmin, cmax=vmax,
-                showscale=(idx == n - 1),
-                colorbar=dict(
-                    title="ρa (Ω·m)",
-                    tickvals=[vmin, (vmin + vmax) / 2, vmax],
-                    ticktext=[f"{10**vmin:.0f}", f"{10**((vmin+vmax)/2):.0f}", f"{10**vmax:.0f}"],
-                    len=0.9 / n,
-                    y=1 - (idx + 0.5) / n,
-                    thickness=12,
-                ),
-            ),
-            hovertemplate=f"{name} | x=%{{x:.1f}}m | z=%{{y:.2f}}m | ρa=%{{customdata:.1f}} Ω·m<extra></extra>",
-            customdata=rho,
-            showlegend=False,
-        ), row=idx + 1, col=1)
+            x=layer1[:, 0], y=layer1[:, 2],
+            mode="lines",
+            name=res.array_name,
+            line=dict(color=color, width=2.5)
+        ))
+        valid = True
 
-        fig.update_yaxes(autorange="reversed", title_text="Depth (m)",
-                         row=idx + 1, col=1)
-        fig.update_xaxes(title_text="Jarak (m)" if idx == n - 1 else "",
-                         row=idx + 1, col=1)
+    if not valid:
+        return go.Figure()
 
     fig.update_layout(
-        height=280 * n,
-        margin=dict(l=60, r=90, t=50, b=50),
+        xaxis=dict(title="Jarak Lintasan (m)", mirror=True, showline=True, linecolor="#1e293b"),
+        yaxis=dict(title="Apparent Resistivity ρa (Ω·m)", gridcolor="rgba(200,200,200,0.3)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=40, t=50, b=50),
         plot_bgcolor="white",
         paper_bgcolor="white",
         font=dict(family="Inter, sans-serif", size=11),
@@ -403,12 +364,14 @@ def plot_comparison_array(results: dict, rho_min=None, rho_max=None) -> go.Figur
     return fig
 
 
+# ─── 6. Bar Chart Rata-rata Lapisan ──────────────────────────────────────────
+
 def plot_layer_bar(layer_avgs: list) -> go.Figure:
-    """Bar chart rata-rata resistivitas per lapisan."""
+    """Bar chart horizontal rata-rata resistivitas per kedalaman lapisan."""
     if not layer_avgs:
         return go.Figure()
 
-    labels = [f"Lap. {d['layer']}\n(z={d['depth']:.1f}m)" for d in layer_avgs]
+    labels = [f"Lap. {d['layer']}\\n(z={d['depth']:.1f}m)" for d in layer_avgs]
     values = [d["avg_rho"] for d in layer_avgs]
     materials = [classify_material(v)[0] for v in values]
     bar_colors = [classify_material(v)[1] for v in values]
@@ -425,13 +388,11 @@ def plot_layer_bar(layer_avgs: list) -> go.Figure:
     ))
 
     fig.update_layout(
-        title=dict(text="Rata-rata Resistivitas per Lapisan", font=dict(size=13), x=0.02),
-        xaxis=dict(title="Resistivitas (Ω·m)", type="log", gridcolor="#f0f0f0"),
-        yaxis=dict(autorange="reversed"),
-        height=230,
-        margin=dict(l=90, r=80, t=40, b=40),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        font=dict(family="Inter, sans-serif", size=12),
+        title=dict(text="Rata-rata Resistivitas dan Estimasi Litologi per Lapisan Model Inversi", font=dict(size=13)),
+        xaxis=dict(title="True Resistivity (Ω·m)", side="bottom"),
+        yaxis=dict(autorange="reverse"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=380,
+        margin=dict(l=100, r=50, t=50, b=40),
     )
     return fig
