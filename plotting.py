@@ -358,14 +358,13 @@ def plot_comparison_array(results_list: list) -> go.Figure:
     return fig
 
 
-# ─── 6. Bar Chart Rata-rata Lapisan (SUDAH DIPERBAIKI UNTUK PYTHON 3.14) ─────
+# ─── 6. Bar Chart Rata-rata Lapisan (PERBAIKAN WARNA LATAR PYTHON 3.14) ──────
 
 def plot_layer_bar(layer_avgs: list) -> go.Figure:
     """Bar chart horizontal rata-rata resistivitas per kedalaman lapisan."""
     if not layer_avgs:
         return go.Figure()
 
-    # PERBAIKAN UTAMA: Menggunakan <br> menggantikan \n untuk kompabilitas Plotly/Python 3.14
     labels = [f"Lap. {d['layer']}<br>(z={d['depth']:.1f}m)" for d in layer_avgs]
     values = [float(d['avg_rho']) for d in layer_avgs]
     materials = [classify_material(v)[0] for v in values]
@@ -386,7 +385,8 @@ def plot_layer_bar(layer_avgs: list) -> go.Figure:
         title=dict(text='Rata-rata Resistivitas dan Estimasi Litologi per Lapisan Model Inversi', font=dict(size=13)),
         xaxis=dict(title='True Resistivity (Ω·m)', side='bottom'),
         yaxis=dict(autorange='reverse'),
-        plot_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='transparent', # PERBAIKAN: Menggunakan nilai konstan transparan standar
+        paper_bgcolor='white',
         height=380,
         margin=dict(l=100, r=50, t=50, b=40),
     )
