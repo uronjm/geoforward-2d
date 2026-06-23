@@ -164,7 +164,7 @@ def plot_true_section(
         mask_row = (xi < left_bound) | (xi > right_bound)
         ZI_interp[zi_idx, mask_row] = np.nan
 
-    # ── Colorbar ticks ────────────────────────────────────────────────────────
+    # ── Colorbar ticks & contour levels ──────────────────────────────────────
     valid_log = ZI_interp[~np.isnan(ZI_interp)]
     if len(valid_log) == 0:
         valid_log = np.array([1.0, 3.0])
@@ -173,33 +173,38 @@ def plot_true_section(
     vmax_log = np.log10(rho_max)  if (rho_max and rho_max > 0) else float(np.nanmax(valid_log))
     vmin_log = max(vmin_log, 0.0)
 
-    # Tick pada posisi log yang "bulat"
-    tick_log_vals = np.linspace(vmin_log, vmax_log, 8)
-    tick_rho_vals = np.power(10, tick_log_vals)
-    # Pembulatan ke angka yang enak dibaca
+    # 14 level kontur (mirip RES2DINV default) dalam skala log
+    N_LEVELS  = 14
+    cont_levels = np.linspace(vmin_log, vmax_log, N_LEVELS + 1)
+
     def _nice(v):
-        if v < 10:
-            return round(v, 1)
-        elif v < 100:
-            return round(v)
-        elif v < 1000:
-            return round(v / 5) * 5
-        else:
-            return round(v / 50) * 50
+        if v < 10:   return round(v, 1)
+        elif v < 100: return round(v)
+        elif v < 1000: return round(v / 5) * 5
+        else: return round(v / 50) * 50
 
-    tick_texts = [str(_nice(v)) for v in tick_rho_vals]
+    tick_log_vals = cont_levels
+    tick_texts    = [str(_nice(10**lv)) for lv in tick_log_vals]
 
-    # ── Gambar Heatmap ────────────────────────────────────────────────────────
-    # NaN pada ZI_interp akan dirender transparan oleh Plotly secara otomatis
+    # ── Gambar Filled Contour (gaya RES2DINV) ────────────────────────────────
     fig = go.Figure()
 
-    fig.add_trace(go.Heatmap(
+    fig.add_trace(go.Contour(
         z=ZI_interp,
         x=xi,
         y=zi,
         colorscale=COLORSCALE_RES2DINV,
         zmin=vmin_log,
         zmax=vmax_log,
+        # Filled contour dengan batas warna tegas
+        contours=dict(
+            coloring="fill",          # zona warna solid, bukan gradient
+            showlines=True,           # garis batas antar zona
+            start=float(cont_levels[0]),
+            end=float(cont_levels[-1]),
+            size=float(cont_levels[1] - cont_levels[0]),
+        ),
+        line=dict(width=0.4, color="rgba(0,0,0,0.25)"),
         colorbar=dict(
             title=dict(text="Resistivity (Ω·m)", side="right", font=dict(size=11)),
             tickvals=tick_log_vals.tolist(),
@@ -209,14 +214,13 @@ def plot_true_section(
             tickfont=dict(size=10),
             outlinewidth=0.5,
             outlinecolor="#aaa",
+            tickmode="array",
         ),
         hovertemplate=(
             "x = %{x:.2f} m<br>"
             "z = %{y:.2f} m<br>"
-            "ρ ≈ %{customdata:.1f} Ω·m<extra></extra>"
+            "<extra></extra>"
         ),
-        customdata=np.power(10, np.where(np.isnan(ZI_interp), 0, ZI_interp)),
-        zsmooth="best",
         connectgaps=False,
     ))
 
@@ -351,6 +355,70 @@ def _safe_griddata(x, z, values, XI, ZI):
     return np.full(XI.shape, float(np.mean(values)))
 
 
+def _make_contour_trace(
+    ZI: np.ndarray,
+    xi: np.ndarray,
+    zi: np.ndarray,
+    vmin_log: float,
+    vmax_log: float,
+    show_colorbar: bool = True,
+    colorbar_y: float = 0.5,
+    colorbar_len: float = 0.9,
+    n_levels: int = 14,
+    label: str = "",
+) -> go.Contour:
+    """
+    Buat filled-contour trace bergaya RES2DINV:
+    warna solid per zona, garis batas tipis, colorbar dengan tick nilai ρ.
+    """
+    cont_size = (vmax_log - vmin_log) / n_levels
+    levels    = np.linspace(vmin_log, vmax_log, n_levels + 1)
+
+    def _nice(v):
+        if v < 10:   return round(v, 1)
+        if v < 100:  return round(v)
+        if v < 1000: return round(v / 5) * 5
+        return round(v / 50) * 50
+
+    tick_text = [str(_nice(10**lv)) for lv in levels]
+
+    return go.Contour(
+        z=ZI,
+        x=xi,
+        y=zi,
+        colorscale=COLORSCALE_RES2DINV,
+        zmin=vmin_log,
+        zmax=vmax_log,
+        contours=dict(
+            coloring="fill",
+            showlines=True,
+            start=float(levels[0]),
+            end=float(levels[-1]),
+            size=float(cont_size),
+        ),
+        line=dict(width=0.5, color="rgba(0,0,0,0.3)"),
+        showscale=show_colorbar,
+        colorbar=dict(
+            title=dict(text="ρa (Ω·m)", side="right", font=dict(size=11)),
+            tickvals=levels.tolist(),
+            ticktext=tick_text,
+            tickmode="array",
+            thickness=15,
+            len=colorbar_len,
+            y=colorbar_y,
+            tickfont=dict(size=10),
+            outlinewidth=0.5,
+        ) if show_colorbar else None,
+        hovertemplate=(
+            f"{label + '<br>' if label else ''}"
+            "x = %{x:.2f} m<br>"
+            "z = %{y:.2f} m<br>"
+            "<extra></extra>"
+        ),
+        connectgaps=False,
+    )
+
+
 def _build_pseudo_heatmap(
     datum_points: np.ndarray,
     vmin_log: float,
@@ -358,11 +426,10 @@ def _build_pseudo_heatmap(
     show_colorbar: bool = True,
     colorbar_y: float = 0.5,
     colorbar_len: float = 0.9,
-) -> go.Heatmap:
+) -> go.Contour:
     """
-    Bangun trace Heatmap dari datum_points pseudosection.
+    Bangun trace Contour filled dari datum_points pseudosection.
     Bentuk segitiga khas pseudosection: melebar ke bawah (sesuai konvensi).
-    Masking: titik di luar batas n-level sesuai tiap kedalaman di-NaN-kan.
     """
     x   = datum_points[:, 0]
     z   = datum_points[:, 1]
@@ -371,9 +438,7 @@ def _build_pseudo_heatmap(
     x_min, x_max = float(x.min()), float(x.max())
     z_min, z_max = float(z.min()), float(z.max())
 
-    # Grid interpolasi halus
-    n_xi = 300
-    n_zi = 150
+    n_xi, n_zi = 300, 150
     xi = np.linspace(x_min, x_max, n_xi)
     zi = np.linspace(z_min, z_max, n_zi)
     XI, ZI = np.meshgrid(xi, zi)
@@ -385,56 +450,26 @@ def _build_pseudo_heatmap(
     else:
         ZI_interp = np.full((n_zi, n_xi), float(np.mean(log_rho)))
 
-    # ── Masking: pseudosection melebar ke bawah (segitiga) ───────────────────
-    z_levels = np.unique(np.round(z, 4))
+    # Masking per level z (bentuk segitiga pseudosection)
+    z_levels  = np.unique(np.round(z, 4))
     z_spacing = (z_max - z_min) / (len(z_levels) * 2 + 1e-9)
     for zi_idx, z_val in enumerate(zi):
-        nearest_level = z_levels[np.argmin(np.abs(z_levels - z_val))]
-        mask = np.abs(z - nearest_level) < z_spacing
+        nearest = z_levels[np.argmin(np.abs(z_levels - z_val))]
+        mask    = np.abs(z - nearest) < z_spacing
         if mask.sum() == 0:
             ZI_interp[zi_idx, :] = np.nan
             continue
         x_left  = float(x[mask].min())
         x_right = float(x[mask].max())
         dx_buf  = (x_max - x_min) / (n_xi * 0.5)
-        row_mask = (xi < x_left - dx_buf) | (xi > x_right + dx_buf)
-        ZI_interp[zi_idx, row_mask] = np.nan
+        ZI_interp[zi_idx, (xi < x_left - dx_buf) | (xi > x_right + dx_buf)] = np.nan
 
-    # ── Colorbar ticks ────────────────────────────────────────────────────────
-    tick_log = np.linspace(vmin_log, vmax_log, 7)
-    def _nice(v):
-        if v < 10:   return round(v, 1)
-        if v < 100:  return round(v)
-        if v < 1000: return round(v / 5) * 5
-        return round(v / 50) * 50
-    tick_text = [str(_nice(10**lv)) for lv in tick_log]
-
-    return go.Heatmap(
-        z=ZI_interp,
-        x=xi,
-        y=zi,
-        colorscale=COLORSCALE_RES2DINV,
-        zmin=vmin_log,
-        zmax=vmax_log,
-        colorbar=dict(
-            title=dict(text="ρa (Ω·m)", side="right", font=dict(size=11)),
-            tickvals=tick_log.tolist(),
-            ticktext=tick_text,
-            thickness=15,
-            len=colorbar_len,
-            y=colorbar_y,
-            tickfont=dict(size=10),
-            outlinewidth=0.5,
-        ) if show_colorbar else None,
-        showscale=show_colorbar,
-        hovertemplate=(
-            "x = %{x:.2f} m<br>"
-            "Pseudo-depth = %{y:.2f} m<br>"
-            "ρa ≈ %{customdata:.1f} Ω·m<extra></extra>"
-        ),
-        customdata=np.power(10, np.where(np.isnan(ZI_interp), 0, ZI_interp)),
-        zsmooth="best",
-        connectgaps=False,
+    return _make_contour_trace(
+        ZI_interp, xi, zi,
+        vmin_log, vmax_log,
+        show_colorbar=show_colorbar,
+        colorbar_y=colorbar_y,
+        colorbar_len=colorbar_len,
     )
 
 
@@ -640,7 +675,7 @@ def _add_pseudo_panel(
     vmax_log: float,
     label: str,
 ):
-    """Tambahkan satu panel pseudosection heatmap ke subplots figure."""
+    """Tambahkan satu panel pseudosection filled-contour ke subplots figure."""
     x   = dp[:, 0]
     z   = dp[:, 1]
     rho = dp[:, 2]
@@ -661,47 +696,29 @@ def _add_pseudo_panel(
         ZI_interp = np.full((n_zi, n_xi), np.mean(log_rho))
 
     # Masking per level z
-    z_levels = np.unique(np.round(z, 4))
+    z_levels  = np.unique(np.round(z, 4))
+    z_spacing = (z_max - z_min) / (len(z_levels) * 2 + 1e-9)
     for zi_idx, z_val in enumerate(zi):
-        nearest = z_levels[np.argmin(np.abs(z_levels - z_val))]
-        mask_pts = np.abs(z - nearest) < (z_max - z_min) / (len(z_levels) * 2 + 1e-9)
+        nearest  = z_levels[np.argmin(np.abs(z_levels - z_val))]
+        mask_pts = np.abs(z - nearest) < z_spacing
         if mask_pts.sum() == 0:
             ZI_interp[zi_idx, :] = np.nan
             continue
         x_left  = float(x[mask_pts].min())
         x_right = float(x[mask_pts].max())
         dx_buf  = (x_max - x_min) / (n_xi * 0.5)
-        row_mask = (xi < x_left - dx_buf) | (xi > x_right + dx_buf)
-        ZI_interp[zi_idx, row_mask] = np.nan
+        ZI_interp[zi_idx, (xi < x_left - dx_buf) | (xi > x_right + dx_buf)] = np.nan
 
-    # Colorbar hanya pada panel terakhir
     is_last = (row == n_total)
-    tick_log  = np.linspace(vmin_log, vmax_log, 7)
-    def _nice(v):
-        if v < 10:   return round(v, 1)
-        if v < 100:  return round(v)
-        if v < 1000: return round(v / 5) * 5
-        return round(v / 50) * 50
-    tick_text = [str(_nice(10**lv)) for lv in tick_log]
-
-    fig.add_trace(go.Heatmap(
-        z=ZI_interp, x=xi, y=zi,
-        colorscale=COLORSCALE_RES2DINV,
-        zmin=vmin_log, zmax=vmax_log,
-        showscale=is_last,
-        colorbar=dict(
-            title=dict(text="ρa (Ω·m)", side="right", font=dict(size=10)),
-            tickvals=tick_log.tolist(), ticktext=tick_text,
-            thickness=14, len=0.9, tickfont=dict(size=9),
-        ) if is_last else None,
-        hovertemplate=(
-            f"{label}<br>x=%{{x:.2f}} m | z=%{{y:.2f}} m<br>"
-            "ρa ≈ %{customdata:.1f} Ω·m<extra></extra>"
-        ),
-        customdata=np.power(10, np.where(np.isnan(ZI_interp), 0, ZI_interp)),
-        zsmooth="best",
-        connectgaps=False,
-    ), row=row, col=1)
+    trace = _make_contour_trace(
+        ZI_interp, xi, zi,
+        vmin_log, vmax_log,
+        show_colorbar=is_last,
+        colorbar_y=0.5,
+        colorbar_len=0.9,
+        label=label,
+    )
+    fig.add_trace(trace, row=row, col=1)
 
     # Overlay putih kiri-kanan
     for tr in _pseudo_outline_traces(dp):
