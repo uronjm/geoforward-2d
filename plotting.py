@@ -142,16 +142,7 @@ def plot_true_section(
 
     if SCIPY_OK:
         log_rho = np.log10(pts_rho)
-        ZI_interp = griddata(
-            (pts_x, pts_z), log_rho,
-            (XI, ZI), method="linear"
-        )
-        # Isi NaN tepi dengan nearest
-        ZI_nn = griddata(
-            (pts_x, pts_z), log_rho,
-            (XI, ZI), method="nearest"
-        )
-        ZI_interp = np.where(np.isnan(ZI_interp), ZI_nn, ZI_interp)
+        ZI_interp = _safe_griddata(pts_x, pts_z, log_rho, XI, ZI)
     else:
         # Fallback tanpa scipy: pakai matriks log asli
         log_mat = np.log10(mat)
@@ -326,6 +317,40 @@ def plot_true_section(
 
 # ─── Helper: interpolasi pseudosection → heatmap ─────────────────────────────
 
+def _safe_griddata(x, z, values, XI, ZI):
+    """
+    Interpolasi griddata yang aman dari QhullError (titik kolinear).
+    Strategi:
+      1. Coba linear → jika gagal atau semua NaN, coba nearest
+      2. Jika nearest juga gagal, kembalikan array rata-rata
+    Jitter kecil pada z mencegah titik sempurna kolinear yang memicu QhullError.
+    """
+    # Jitter kecil pada z (1e-6 * range) agar titik tidak kolinear sempurna
+    z_range = float(z.max() - z.min()) if z.max() != z.min() else 1.0
+    rng = np.random.default_rng(42)
+    z_jit = z + rng.uniform(-z_range * 1e-5, z_range * 1e-5, size=z.shape)
+
+    try:
+        result = griddata((x, z_jit), values, (XI, ZI), method="linear")
+        # Isi NaN sisa dengan nearest
+        nan_mask = np.isnan(result)
+        if nan_mask.any():
+            nn = griddata((x, z_jit), values, (XI, ZI), method="nearest")
+            result = np.where(nan_mask, nn, result)
+        return result
+    except Exception:
+        pass
+
+    # Fallback nearest tanpa jitter
+    try:
+        return griddata((x, z), values, (XI, ZI), method="nearest")
+    except Exception:
+        pass
+
+    # Fallback terakhir: rata-rata konstan
+    return np.full(XI.shape, float(np.mean(values)))
+
+
 def _build_pseudo_heatmap(
     datum_points: np.ndarray,
     vmin_log: float,
@@ -356,28 +381,22 @@ def _build_pseudo_heatmap(
     log_rho = np.log10(np.where(rho <= 0, 0.1, rho))
 
     if SCIPY_OK and len(x) >= 4:
-        ZI_interp = griddata((x, z), log_rho, (XI, ZI), method="linear")
-        ZI_nn     = griddata((x, z), log_rho, (XI, ZI), method="nearest")
-        ZI_interp = np.where(np.isnan(ZI_interp), ZI_nn, ZI_interp)
+        ZI_interp = _safe_griddata(x, z, log_rho, XI, ZI)
     else:
-        # Fallback: nearest tanpa scipy
-        ZI_interp = np.full((n_zi, n_xi), np.mean(log_rho))
+        ZI_interp = np.full((n_zi, n_xi), float(np.mean(log_rho)))
 
     # ── Masking: pseudosection melebar ke bawah (segitiga) ───────────────────
-    # Pada kedalaman z, titik datum valid hanya di antara x_min_valid(z)..x_max_valid(z)
-    # Kita estimasi dari data aktual: per level z, cari rentang x yang ada
     z_levels = np.unique(np.round(z, 4))
+    z_spacing = (z_max - z_min) / (len(z_levels) * 2 + 1e-9)
     for zi_idx, z_val in enumerate(zi):
-        # Cari level z terdekat di data
         nearest_level = z_levels[np.argmin(np.abs(z_levels - z_val))]
-        mask = np.abs(z - nearest_level) < (z_max - z_min) / (len(z_levels) * 2 + 1e-9)
+        mask = np.abs(z - nearest_level) < z_spacing
         if mask.sum() == 0:
             ZI_interp[zi_idx, :] = np.nan
             continue
         x_left  = float(x[mask].min())
         x_right = float(x[mask].max())
-        # Tambahkan sedikit buffer agar tepian tidak terpotong terlalu ketat
-        dx_buf = (x_max - x_min) / (n_xi * 0.5)
+        dx_buf  = (x_max - x_min) / (n_xi * 0.5)
         row_mask = (xi < x_left - dx_buf) | (xi > x_right + dx_buf)
         ZI_interp[zi_idx, row_mask] = np.nan
 
@@ -637,9 +656,7 @@ def _add_pseudo_panel(
     log_rho = np.log10(np.where(rho <= 0, 0.1, rho))
 
     if SCIPY_OK and len(x) >= 4:
-        ZI_interp = griddata((x, z), log_rho, (XI, ZI), method="linear")
-        ZI_nn     = griddata((x, z), log_rho, (XI, ZI), method="nearest")
-        ZI_interp = np.where(np.isnan(ZI_interp), ZI_nn, ZI_interp)
+        ZI_interp = _safe_griddata(x, z, log_rho, XI, ZI)
     else:
         ZI_interp = np.full((n_zi, n_xi), np.mean(log_rho))
 
