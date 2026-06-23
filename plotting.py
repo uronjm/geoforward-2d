@@ -199,6 +199,7 @@ def plot_true_section(
     tick_texts = [str(_nice(v)) for v in tick_rho_vals]
 
     # ── Gambar Heatmap ────────────────────────────────────────────────────────
+    # NaN pada ZI_interp akan dirender transparan oleh Plotly secara otomatis
     fig = go.Figure()
 
     fig.add_trace(go.Heatmap(
@@ -223,39 +224,54 @@ def plot_true_section(
             "z = %{y:.2f} m<br>"
             "ρ ≈ %{customdata:.1f} Ω·m<extra></extra>"
         ),
-        customdata=np.power(10, ZI_interp),
-        zsmooth="best",          # Plotly akan smooth warna antar piksel
+        customdata=np.power(10, np.where(np.isnan(ZI_interp), 0, ZI_interp)),
+        zsmooth="best",
         connectgaps=False,
     ))
 
-    # ── Garis outline trapezoid ───────────────────────────────────────────────
-    # Sisi kiri, kanan, bawah
-    outline_fracs = np.linspace(0, 1, 80)
-    dx_total_half = dx_total * margin_factor / 2
-
-    left_x  = [x_min + f * dx_total * margin_factor for f in outline_fracs]
-    right_x = [x_max - f * dx_total * margin_factor for f in outline_fracs]
-    out_z   = [z_min + f * (z_max - z_min) for f in outline_fracs]
-
-    # Bottom line
+    # ── Overlay putih kiri dan kanan untuk membentuk trapezoid ───────────────
+    # Strategi: gambar dua polygon putih di atas heatmap
+    # Segitiga kiri: (x_min, z_min) → (x_min, z_max) → (bottom_left, z_max) → kembali
+    # Segitiga kanan: (x_max, z_min) → (bottom_right, z_max) → (x_max, z_max) → kembali
     bottom_left  = x_min + dx_total * margin_factor
     bottom_right = x_max - dx_total * margin_factor
 
-    outline_xs = [x_min] + left_x + [bottom_left, bottom_right] + list(reversed(right_x)) + [x_max, x_min]
-    outline_zs = [z_min] + out_z  + [z_max, z_max]              + list(reversed(out_z))   + [z_min, z_min]
-
+    # Polygon kiri (area luar kiri trapezoid)
     fig.add_trace(go.Scatter(
-        x=outline_xs, y=outline_zs,
+        x=[x_min, x_min, bottom_left, x_min],
+        y=[z_min,  z_max, z_max,       z_min],
         mode="lines",
-        line=dict(color="black", width=1.2),
+        fill="toself",
+        fillcolor="white",
+        line=dict(color="white", width=0),
         hoverinfo="skip",
         showlegend=False,
-        fill="toself",
-        fillcolor="white",   # putih di luar trapezoid
-        # Gunakan above untuk menutupi area luar
     ))
 
-    # ── Titik datum di permukaan ──────────────────────────────────────────────
+    # Polygon kanan (area luar kanan trapezoid)
+    fig.add_trace(go.Scatter(
+        x=[x_max, bottom_right, x_max, x_max],
+        y=[z_min,  z_max,        z_max, z_min],
+        mode="lines",
+        fill="toself",
+        fillcolor="white",
+        line=dict(color="white", width=0),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+    # ── Garis outline trapezoid (border hitam tipis) ──────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[x_min, bottom_left,  bottom_right, x_max,  x_min],
+        y=[z_min,  z_max,        z_max,         z_min,  z_min],
+        mode="lines",
+        line=dict(color="black", width=1.5),
+        hoverinfo="skip",
+        showlegend=False,
+        fill=None,
+    ))
+
+    # ── Titik datum (elektroda) di permukaan ─────────────────────────────────
     fig.add_trace(go.Scatter(
         x=x_arr,
         y=np.full_like(x_arr, z_min),
